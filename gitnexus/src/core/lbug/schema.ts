@@ -10,10 +10,16 @@
  */
 
 // Import from shared package (single source of truth) — used in DDL templates below
-import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
+import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES } from 'gitnexus-shared';
 // Re-export so downstream consumers keep the same import path
-export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
+export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES };
 export type { NodeTableName, RelType } from 'gitnexus-shared';
+
+/**
+ * Embedding table name (now stored in SQLite, not LadybugDB)
+ * Kept here for backward compatibility with imports
+ */
+export const EMBEDDING_TABLE_NAME = 'code_embeddings';
 
 // ============================================================================
 // NODE TABLE SCHEMAS
@@ -427,47 +433,16 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
 )`;
 
 // ============================================================================
-// EMBEDDING TABLE SCHEMA
-// Separate table for vector storage to avoid copy-on-write overhead
+// EMBEDDING STORAGE
+// Embeddings are now stored in SQLite + sqlite-vec, not LadybugDB
+// See: src/core/embeddings/sqlite-store.ts
 // ============================================================================
 
-/** Embedding vector dimensions. Default 384 (snowflake-arctic-embed-xs). */
-const _rawDims = parseInt(process.env.GITNEXUS_EMBEDDING_DIMS ?? '384', 10);
-if (Number.isNaN(_rawDims) || _rawDims <= 0) {
-  throw new Error(
-    `GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${process.env.GITNEXUS_EMBEDDING_DIMS}"`,
-  );
-}
-export const EMBEDDING_DIMS = _rawDims;
+/** Default embedding dimensions (nomic-embed-text = 768) */
+export const EMBEDDING_DIMS = parseInt(process.env.GITNEXUS_EMBEDDING_DIMS ?? '768', 10);
 
-/** HNSW vector index name for the CodeEmbedding table. */
-export const EMBEDDING_INDEX_NAME = 'code_embedding_idx';
-
-/**
- * Sentinel value for "no content hash available" — used in legacy DBs and null rows.
- * Nodes with this hash are always treated as stale and re-embedded.
- */
+/** Sentinel value for "no content hash available" — used for stale detection */
 export const STALE_HASH_SENTINEL = '';
-
-export const EMBEDDING_SCHEMA = `
-CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
-  id STRING,
-  nodeId STRING,
-  chunkIndex INT32,
-  startLine INT64,
-  endLine INT64,
-  embedding FLOAT[${EMBEDDING_DIMS}],
-  contentHash STRING,
-  PRIMARY KEY (id)
-)`;
-
-/**
- * Create vector index for semantic search
- * Uses HNSW (Hierarchical Navigable Small World) algorithm with cosine similarity
- */
-export const CREATE_VECTOR_INDEX_QUERY = `
-CALL CREATE_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}', 'embedding', metric := 'cosine')
-`;
 
 // ============================================================================
 // ALL SCHEMA QUERIES IN ORDER
@@ -514,4 +489,4 @@ export const NODE_SCHEMA_QUERIES = [
 
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
-export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA];
+export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES];

@@ -33,7 +33,13 @@ import {
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
+import {
+  initSqliteStore,
+  loadCachedEmbeddings as loadSqliteCachedEmbeddings,
+  batchInsertEmbeddings,
+  getEmbeddingCount,
+  closeSqliteStore,
+} from './embeddings/sqlite-store.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
 // ---------------------------------------------------------------------------
@@ -222,12 +228,13 @@ export async function runFullAnalysis(
 
   if (shouldLoadCache && existingMeta) {
     try {
-      progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
-      const cached = await loadCachedEmbeddings();
+      progress('embeddings', 0, 'Caching embeddings from SQLite...');
+      const sqliteDbPath = path.join(storagePath, 'embeddings.db');
+      const sqliteDb = initSqliteStore({ dbPath: sqliteDbPath, dimensions: 768 });
+      const cached = loadSqliteCachedEmbeddings(sqliteDb);
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
-      await closeLbug();
+      closeSqliteStore(sqliteDb);
     } catch (err: any) {
       // Surface cache-load failures explicitly: silently swallowing here would
       // re-introduce the original silent-data-loss symptom (embeddings end up
@@ -289,28 +296,36 @@ export async function runFullAnalysis(
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     if (cachedEmbeddings.length > 0) {
       const cachedDims = cachedEmbeddings[0].embedding.length;
-      const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
-      if (cachedDims !== EMBEDDING_DIMS) {
+      const EXPECTED_DIMS = 768; // nomic-embed-text produces 768-dim vectors
+      if (cachedDims !== EXPECTED_DIMS) {
         // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
         log(
-          `Embedding dimensions changed (${cachedDims}d -> ${EMBEDDING_DIMS}d), discarding cache`,
+          `Embedding dimensions changed (${cachedDims}d -> ${EXPECTED_DIMS}d), discarding cache`,
         );
         cachedEmbeddings = [];
         cachedEmbeddingNodeIds = new Set();
       } else {
         progress('embeddings', 88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-        const { batchInsertEmbeddings: batchInsert } =
-          await import('./embeddings/embedding-pipeline.js');
+        const sqliteDbPath = path.join(storagePath, 'embeddings.db');
+        const sqliteDb = initSqliteStore({ dbPath: sqliteDbPath, dimensions: EXPECTED_DIMS });
         const EMBED_BATCH = 200;
         for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
           const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-
           try {
-            await batchInsert(executeWithReusedStatement, batch);
+            batchInsertEmbeddings(sqliteDb, batch.map((e) => ({
+              id: `${e.nodeId}:${e.chunkIndex}`,
+              nodeId: e.nodeId,
+              chunkIndex: e.chunkIndex,
+              startLine: e.startLine,
+              endLine: e.endLine,
+              embedding: e.embedding,
+              contentHash: e.contentHash,
+            })));
           } catch {
             /* some may fail if node was removed, that's fine */
           }
         }
+        closeSqliteStore(sqliteDb);
       }
     }
 
@@ -327,7 +342,10 @@ export async function runFullAnalysis(
 
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
+      const { readServerMapping } = await import('./embeddings/server-mapping.js');
       const httpMode = isHttpMode();
+      const projectName = path.basename(repoPath);
+      const serverName = await readServerMapping(projectName);
       progress(
         'embeddings',
         90,
@@ -343,9 +361,7 @@ export async function runFullAnalysis(
         }
       }
 
-      const { readServerMapping } = await import('./embeddings/server-mapping.js');
-      const projectName = path.basename(repoPath);
-      const serverName = await readServerMapping(projectName);
+      const sqliteDbPath = path.join(storagePath, 'embeddings.db');
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -363,6 +379,7 @@ export async function runFullAnalysis(
         cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
         { repoName: projectName, serverName },
         existingEmbeddings,
+        sqliteDbPath,
       );
       if (embeddingResult.semanticMode === 'exact-scan') {
         semanticMode = 'exact-scan';
@@ -381,13 +398,12 @@ export async function runFullAnalysis(
     // Count embeddings in the index (cached + newly generated)
     let embeddingCount = 0;
     try {
-      const embResult = await executeQuery(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
-      );
-      const row = embResult?.[0];
-      embeddingCount = Number(row?.cnt ?? row?.[0] ?? 0);
+      const sqliteDbPath = path.join(storagePath, 'embeddings.db');
+      const sqliteDb = initSqliteStore({ dbPath: sqliteDbPath, dimensions: 768 });
+      embeddingCount = getEmbeddingCount(sqliteDb);
+      closeSqliteStore(sqliteDb);
     } catch {
-      /* table may not exist if embeddings never ran */
+      /* SQLite may not exist if embeddings never ran */
     }
 
     if (!embeddingSkipped && stats.nodes > 0 && embeddingCount === 0) {

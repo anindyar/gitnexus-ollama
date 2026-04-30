@@ -34,7 +34,7 @@ import {
   rankExactEmbeddingRows,
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
-import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
+import { EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import {
   getExactScanLimit,
   isVectorExtensionSupportedByPlatform,
@@ -489,6 +489,9 @@ export class LocalBackend {
 
     try {
       await initLbug(repoId, handle.lbugPath);
+      // Initialize SQLite vector store for embeddings
+      const { initVecStore } = await import('../../core/embeddings/sqlite-vec-store.js');
+      initVecStore(handle.storagePath);
       this.initializedRepos.add(repoId);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
@@ -1062,101 +1065,24 @@ export class LocalBackend {
   }
 
   /**
-   * Semantic vector search helper
+   * Semantic vector search helper — uses SQLite vector store
    */
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     try {
-      // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
-      const tableCheck = await executeQuery(
-        repo.id,
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
-      );
-      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
-
-      const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
+      const { embedQuery } = await import('../core/embedder.js');
+      const { semanticSearch: vecSearch, getVecStore } = await import('../../core/embeddings/sqlite-store.js');
       const queryVec = await embedQuery(query);
-      const dims = getEmbeddingDims();
-      const queryVecStr = `[${queryVec.join(',')}]`;
 
-      let bestChunks = new Map<
-        string,
-        { distance: number; chunkIndex: number; startLine: number; endLine: number }
-      >();
-      if (isVectorExtensionSupportedByPlatform()) {
-        try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
-            CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
-              CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
-            YIELD node AS emb, distance
-            WITH emb, distance
-            WHERE distance < 0.6
-            RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
-                   emb.startLine AS startLine, emb.endLine AS endLine, distance
-            ORDER BY distance
-          `;
+      // Use SQLite vector store for search
+      const db = getVecStore();
+      const searchResults = vecSearch(db, queryVec, limit, 0.6);
 
-            const embResults = await executeQuery(repo.id, vectorQuery);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch {
-          bestChunks = new Map();
-        }
-      } else if (!this.warnedVectorUnsupported) {
-        // Rare diagnostic: surface why we fell back to the exact scan path so
-        // operators can see at a glance that VECTOR is disabled by platform
-        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
-        // noisy stderr on hot semantic-search paths (DoD §2.8).
-        this.warnedVectorUnsupported = true;
-        console.error(
-          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
-        );
-      }
-
-      if (bestChunks.size === 0) {
-        const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
-        const exactLimit = getExactScanLimit();
-        if (embeddingCount > exactLimit) return [];
-
-        const rows = await executeQuery(
-          repo.id,
-          `
-          MATCH (e:${EMBEDDING_TABLE_NAME})
-          RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
-                 e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
-        `,
-        );
-        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
-          nodeId: row.nodeId ?? row[0],
-          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-          startLine: row.startLine ?? row[2] ?? 0,
-          endLine: row.endLine ?? row[3] ?? 0,
-          embedding: row.embedding ?? row[4] ?? [],
-        }));
-        bestChunks = new Map(
-          rankExactEmbeddingRows(exactRows, queryVec, limit, 0.6).map((row) => [
-            row.nodeId,
-            {
-              distance: row.distance,
-              chunkIndex: row.chunkIndex,
-              startLine: row.startLine,
-              endLine: row.endLine,
-            },
-          ]),
-        );
-      }
-
-      if (bestChunks.size === 0) return [];
+      if (searchResults.length === 0) return [];
 
       const results: any[] = [];
 
-      for (const [nodeId, chunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
+      for (const match of searchResults) {
+        const nodeId = match.nodeId;
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
@@ -1177,9 +1103,9 @@ export class LocalBackend {
               name: nodeRow.name ?? nodeRow[0] ?? '',
               type: label,
               filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
-              distance: chunk.distance,
-              startLine: chunk.startLine,
-              endLine: chunk.endLine,
+              distance: match.distance,
+              startLine: match.startLine,
+              endLine: match.endLine,
             });
           }
         } catch {}

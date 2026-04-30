@@ -350,8 +350,8 @@ const doInitLbug = async (dbPath: string) => {
     }
   }
 
-  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
-  // only required for semantic embeddings and is probed lazily there.
+  // FTS powers baseline search, so initialize it with the core DB.
+  // VECTOR extension is no longer used - embeddings are stored in SQLite
   await loadFTSExtension();
 
   currentDbPath = dbPath;
@@ -1174,26 +1174,11 @@ export const loadFTSExtension = async (
 };
 
 /**
- * Load the VECTOR extension on the supplied connection (or the singleton
- * writable connection when none is given). Returns false when VECTOR is
- * unavailable so semantic search can fall back to exact scan.
+ * VECTOR extension is no longer used - embeddings are stored in SQLite.
+ * This function is kept for backward compatibility but always returns false.
  */
-export const loadVectorExtension = async (
-  targetConn?: lbug.Connection,
-  opts: ExtensionEnsureOptions = {},
-): Promise<boolean> => {
-  const useModuleState = targetConn === undefined;
-  if (useModuleState && vectorExtensionLoaded) return true;
-  if (!isVectorExtensionSupportedByPlatform()) return false;
-
-  const c: lbug.Connection | null = targetConn ?? conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-
-  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'VECTOR', 'VECTOR', opts);
-  if (loaded && useModuleState) vectorExtensionLoaded = true;
-  return loaded;
+export const loadVectorExtension = async (): Promise<boolean> => {
+  return false;
 };
 /**
  * Create a full-text search index on a table

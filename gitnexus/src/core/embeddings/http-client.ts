@@ -9,7 +9,11 @@ const HTTP_TIMEOUT_MS = 30_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_BATCH_SIZE = 64;
-const DEFAULT_DIMS = 384;
+
+/** Default Ollama embedding config */
+const OLLAMA_DEFAULT_URL = 'http://localhost:11434/v1';
+const OLLAMA_DEFAULT_MODEL = 'nomic-embed-text';
+const DEFAULT_DIMS = 768;
 
 interface HttpConfig {
   baseUrl: string;
@@ -23,10 +27,9 @@ interface HttpConfig {
  * Returns null when GITNEXUS_EMBEDDING_URL + GITNEXUS_EMBEDDING_MODEL are unset.
  * Not cached — env vars are read fresh so late configuration takes effect.
  */
-const readConfig = (): HttpConfig | null => {
-  const baseUrl = process.env.GITNEXUS_EMBEDDING_URL;
-  const model = process.env.GITNEXUS_EMBEDDING_MODEL;
-  if (!baseUrl || !model) return null;
+const readConfig = (): HttpConfig => {
+  const baseUrl = process.env.GITNEXUS_EMBEDDING_URL || OLLAMA_DEFAULT_URL;
+  const model = process.env.GITNEXUS_EMBEDDING_MODEL || OLLAMA_DEFAULT_MODEL;
 
   const rawDims = process.env.GITNEXUS_EMBEDDING_DIMS;
   let dimensions: number | undefined;
@@ -47,9 +50,10 @@ const readConfig = (): HttpConfig | null => {
 };
 
 /**
- * Check whether HTTP embedding mode is active (env vars are set).
+ * Check whether HTTP embedding mode is active.
+ * Always returns true now — Ollama is the default backend.
  */
-export const isHttpMode = (): boolean => readConfig() !== null;
+export const isHttpMode = (): boolean => true;
 
 /**
  * Return the configured embedding dimensions for HTTP mode, or undefined

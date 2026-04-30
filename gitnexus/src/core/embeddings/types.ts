@@ -231,12 +231,12 @@ export interface EmbeddingConfig {
  * Tries WebGPU first (fast), user can choose WASM fallback if unavailable
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
-  modelId: 'Snowflake/snowflake-arctic-embed-xs',
+  modelId: 'nomic-embed-text',
   batchSize: 16,
   subBatchSize: 8,
   threads: 2,
-  dimensions: 384,
-  device: 'auto',
+  dimensions: 768,
+  device: 'cpu',
   maxSnippetLength: 500,
   chunkSize: 1200,
   overlap: 120,
