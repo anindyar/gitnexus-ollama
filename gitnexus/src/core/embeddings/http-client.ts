@@ -10,6 +10,9 @@ const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_BATCH_SIZE = 64;
 
+/** Max chars per text before truncation (nomic-embed-text has 8192 token context; ~3 chars/token for code) */
+const MAX_TEXT_LENGTH = 3000;
+
 /** Default Ollama embedding config */
 const OLLAMA_DEFAULT_URL = 'http://localhost:11434/v1';
 const OLLAMA_DEFAULT_MODEL = 'nomic-embed-text';
@@ -105,7 +108,7 @@ const httpEmbedBatch = async (
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ input: batch, model }),
+      body: JSON.stringify({ input: batch.map((t: string) => t.length > MAX_TEXT_LENGTH ? t.slice(0, MAX_TEXT_LENGTH) : t), model }),
     });
   } catch (err) {
     // Timeouts should not be retried — the server is unresponsive.
@@ -128,12 +131,13 @@ const httpEmbedBatch = async (
 
   if (!resp.ok) {
     const status = resp.status;
+    const errorBody = await resp.text().catch(() => '');
     if ((status === 429 || status >= 500) && attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
       return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
     }
-    throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
+    throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex}): ${errorBody.slice(0, 500)}`);
   }
 
   const data = (await resp.json()) as { data: EmbeddingItem[] };
