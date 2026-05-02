@@ -256,10 +256,13 @@ gitnexus analyze /path/to/repo --force --embeddings
 LadybugDB is still used for graph storage (only the VECTOR extension was replaced). If `npm install` doesn't produce the native binary:
 
 ```bash
-# Option A: Install LadybugDB core system package (if available)
-npm install @ladybugdb/core
+# Arch Linux
+sudo pacman -S python-ladybug-core
 
-# Option B: Copy binary from a working machine (e.g. Ubuntu 22.04)
+# Ubuntu/Debian
+# No system package — install via npm and hope it builds, or copy from Ubuntu 22.04
+
+# Option B: Copy binary from a working machine
 scp user@working-machine:/path/to/gitnexus/node_modules/@ladybugdb/core/lbugjs.node \
     ./node_modules/@ladybugdb/core/lbugjs.node
 
