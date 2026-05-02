@@ -55,6 +55,15 @@ npm install
 npm run build
 ```
 
+> **Build dependencies:** You need `typescript` and a C++ compiler (for better-sqlite3 native build). If `npm run build` fails:
+> ```bash
+> npm install typescript --save-dev
+> npx node-gyp rebuild --directory=node_modules/better-sqlite3
+> npm run build
+> ```
+>
+> **LadybugDB binary:** If `analyze` crashes with `ERR_DLOPEN_FAILED`, the LadybugDB native binary didn't build. See [Troubleshooting](#troubleshooting) below.
+
 Then index any codebase:
 
 ```bash
@@ -242,11 +251,53 @@ gitnexus analyze /path/to/repo --force --embeddings
 
 ## Troubleshooting
 
+### LadybugDB native binary missing (`lbugjs.node`)
+
+LadybugDB is still used for graph storage (only the VECTOR extension was replaced). If `npm install` doesn't produce the native binary:
+
+```bash
+# Option A: Install LadybugDB core system package (if available)
+npm install @ladybugdb/core
+
+# Option B: Copy binary from a working machine (e.g. Ubuntu 22.04)
+scp user@working-machine:/path/to/gitnexus/node_modules/@ladybugdb/core/lbugjs.node \
+    ./node_modules/@ladybugdb/core/lbugjs.node
+
+# Verify
+ls node_modules/@ladybugdb/core/lbugjs.node
+```
+
+If you get `ERR_DLOPEN_FAILED` on Arch Linux or very new glibc, Option B from an older distro usually works.
+
 ### "Could not locate the bindings file" (better-sqlite3)
 
 ```bash
-npm rebuild better-sqlite3
+# Rebuild from source
+npx node-gyp rebuild --directory=node_modules/better-sqlite3
 ```
+
+### Tailscale / Remote Access (CORS)
+
+By default, the serve API only accepts connections from localhost and RFC 1918 IPs. To access via **Tailscale** (100.64.0.0/10 range), patch the CORS check in `dist/server/api.js`:
+
+Find the line `if (a === 192 && b === 168) return true;` and add after it:
+```javascript
+// Tailscale CGNAT range 100.64.0.0/10
+if (a === 100 && b >= 64 && b <= 127) return true;
+```
+
+Then start the server bound to all interfaces:
+```bash
+node dist/cli/index.js serve --host 0.0.0.0 -p 4747
+```
+
+For the web UI, serve the static files on another port:
+```bash
+cd gitnexus/web
+python3 -m http.server 4173 --bind 0.0.0.0
+```
+
+Access via: `http://<tailscale-ip>:4173/?server=http://<tailscale-ip>:4747`
 
 ### "Embedding request timed out"
 
